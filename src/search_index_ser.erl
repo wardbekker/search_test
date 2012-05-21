@@ -68,21 +68,61 @@ import_faster() ->
     %% dict:from_list(Pairs).
 
 import_faster_p() ->
-    {ok,Bin} = file:read_file("dump.bin"),
+    T1 = erlang:now(),
+    {ok,Bin} = file:read_file("dump_large.bin"),
     Terms = binary_to_term(Bin),
-    %% about 500 ms up to here
-    _Pairs = plists:map(
-               fun({DocId, Attributes}) ->
-                       {ok, Body} = dict:find("Body", Attributes),
-                       Body1 = re:replace(Body, "[^\\W\\d]", " ", [{return,list},global,unicode]),
-                       Tokens = string:tokens(Body1, " .,-;"),
-                       [{Term, DocId} || Term <- Tokens]
-               end,
-               Terms,
-               {processes, 8}
-              ),
+    T2 = erlang:now(),
+    io:format("file read: ~p milliseconds~n", [timer:now_diff(T1,T2)]), 
+    io:format("term count ~p~n", [length(Terms)]),
+    TermList = plists:map(
+      fun({DocId, Attributes}) ->
+              {ok, Body} = dict:find("Body", Attributes),
+              [{T, DocId} || T <- string:tokens(tokenize(Body), " "), length(T) >= 3]
+      end,
+      Terms,
+      {processes, erlang:system_info(schedulers)}
+     ),
+    T3 = erlang:now(),
+    io:format("emmited termlist: ~p milliseconds~n", [timer:now_diff(T2,T3)]), 
+    TermList1 = plists:sort(
+                   fun({Term1,_}, {Term2,_}) ->
+                           Term1 =< Term2
+                   end,
+                   lists:flatten(TermList),
+                   {processes, erlang:system_info(schedulers)}
+                  ),
+    T4 = erlang:now(),
+    io:format("sorted termlist: ~p milliseconds~n", [timer:now_diff(T3,T4)]), 
+    TermList2 = plists:fold(
+      fun
+          ({Tcurrent, DocId}, [{Tprevious, DocIds} | Tail ]) ->
+              case Tcurrent =/= Tprevious of
+                  true -> 
+                      [{Tcurrent, [DocId]}, {Tprevious, DocIds} | Tail];
+                  false -> 
+                      [{Tprevious, [ DocId | DocIds ]} | Tail ]
+              end;
+          ({Tcurrent, DocId}, []) ->
+              [{Tcurrent, [DocId]}];
+          (Res1, Res2) when is_list(Res1) andalso is_list(Res2) ->
+              [Res1,Res2]
+      end,
+      [],
+      TermList1,
+      {processes, erlang:system_info(schedulers)}
+     ),
+    T5 = erlang:now(),
+    io:format("dict updated: ~p milliseconds~n", [timer:now_diff(T4,T5)]), 
+    dict:from_list(lists:flatten(TermList2)),
     ok.
-
+tokenize(List) when is_list(List) ->
+    lists:map(
+      fun(C) -> tokenize(C) end,
+      List
+     );
+tokenize(C) when C >= 65 andalso C =< 90 -> C + 32;
+tokenize(C) when C >= 97 andalso C =< 122 -> C;
+tokenize(_) -> 32.
 
 add(Term, DocumentId) ->
     case length(Term) > 2 of
