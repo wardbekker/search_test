@@ -98,7 +98,7 @@ import_faster_p() ->
           ({Tcurrent, DocId}, [{Tprevious, DocIds} | Tail ]) ->
               case Tcurrent =/= Tprevious of
                   true -> 
-                      [{Tcurrent, [DocId]}, {Tprevious, DocIds} | Tail];
+                      [{Tcurrent, [DocId]}, {Tprevious, term_frequency_list(DocIds)} | Tail];
                   false -> 
                       [{Tprevious, [ DocId | DocIds ]} | Tail ]
               end;
@@ -113,8 +113,63 @@ import_faster_p() ->
      ),
     T5 = erlang:now(),
     io:format("dict updated: ~p milliseconds~n", [timer:now_diff(T4,T5)]), 
-    dict:from_list(lists:flatten(TermList2)),
-    ok.
+    dict:from_list(lists:flatten(TermList2)).
+
+term_frequency_list(DocIds) ->
+    DocIds1 = lists:sort(DocIds),
+    DocFrequencies = lists:foldl(
+      fun
+          (CurrentDocId, [{PreviousDocId, PreviousCount} | Tail]) ->
+              case CurrentDocId =/= PreviousDocId of
+                  true ->
+                      [{CurrentDocId, 1}, {PreviousDocId, PreviousCount} | Tail];
+                  false ->
+                      [{PreviousDocId, PreviousCount + 1} | Tail]
+              end;
+          (CurrentDocId, []) ->
+                  [{CurrentDocId,1}]
+      end,
+      [],
+      DocIds1
+     ),
+    lists:reverse(lists:keysort(2, DocFrequencies)).
+
+faster_query(QueryTerms, IndexDict) ->
+    Docs = lists:map(fun(T) -> dict:fetch(T, IndexDict) end, QueryTerms),
+    %% determin intersections
+    Sets = lists:map(
+             fun(Doc) ->
+                     {DocIds, _} = lists:unzip(Doc),
+                     gb_sets:from_list(DocIds)
+             end,
+             Docs
+            ),
+    Intersections = gb_sets:to_list(gb_sets:intersection(Sets)),
+    %% get all tuple lists that match the docids of the intersection
+    FilterFun = fun(DocId, DocFrequencies) ->
+                        lists:keyfind(DocId, 1, DocFrequencies)
+                end,
+    ResultList1 = 
+        [FilterFun(DocId, Doc) || DocId <- Intersections, Doc <- Docs],
+
+    ResultList2 = lists:foldl(
+      fun
+          ({CurrentDocId, CurrentCount}, [{PreviousDocId, PreviousCount} | Tail]) ->
+                       case CurrentDocId =/= PreviousDocId of
+                           true ->
+                               [{CurrentDocId, CurrentCount}, {PreviousDocId, PreviousCount} | Tail];
+                           false ->
+                               [{PreviousDocId, PreviousCount + CurrentCount} | Tail]
+                       end;
+          ({CurrentDocId, CurrentCount}, []) ->
+                       [{CurrentDocId,CurrentCount}]
+               end,
+      [],
+      ResultList1
+     ),
+    lists:reverse(lists:keysort(2, ResultList2)).
+
+
 tokenize(List) when is_list(List) ->
     lists:map(
       fun(C) -> tokenize(C) end,
